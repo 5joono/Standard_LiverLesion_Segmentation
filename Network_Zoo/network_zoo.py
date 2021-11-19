@@ -148,7 +148,6 @@ class Scaffold_UNet(nn.Module):
 
 
 
-
     def forward(self,net_layers):
         n_up_blocks   = len(self.upconv_blocks)
 
@@ -295,7 +294,7 @@ class Scaffold_UNetsasa_share(nn.Module):
             ### For the first layer, group norm reduces to instance norm
             self.input_conv.append(self.pars.fset.norm(self.pars.Network['filter_start'], self.pars.Network['filter_start']))
         self.input_conv.append(nn.LeakyReLU(0.05))
-        self.input_conv          = nn.Sequential(*self.input_conv0)
+        self.input_conv          = nn.Sequential(*self.input_conv)
 
 
         ####################################### [AU] PYPOOL #############################################################
@@ -958,7 +957,7 @@ class UNetBlockDownsasa_unique(nn.Module):
             dense_list1 = []
             dense_list2 = []
 
-        for i in range(len(self.convs)):
+        for i in range(len(self.convs0)):
             ### NORMALIZE INPUT
             net_layers0 = self.norms0[i](net_layers0)
             net_layers1 = self.norms1[i](net_layers1)
