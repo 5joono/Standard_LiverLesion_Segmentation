@@ -78,21 +78,58 @@ def main(opt):
         ### NETWORK SETUP WITHOUT INITIALIZATION
         network = netlib.NetworkSelect(opt)
 
-    if opt.Network['sasa']:
+    if 'sasa' in opt.Network.keys():
         oldnetwork_opt = pkl.load(open('../SAVEDATA/Standard_Lesion_Networks/vUnet2D_lesion_small/hypa.pkl','rb'))
         oldnetwork = netlib.NetworkSelect(oldnetwork_opt)
         oldcheckpoint = torch.load('../SAVEDATA/Standard_Lesion_Networks/vUnet2D_lesion_small/checkpoint_best_val.pth.tar')
         oldnetwork.load_state_dict(oldcheckpoint['network_state_dict'])
-        print('old network')
-        print(oldnetwork.state_dict().keys())
-        print('new network')
-        print(network.state_dict().keys())
-        print('old network')
-        print(oldnetwork.state_dict()['input_conv.0.weight'])
-        print('new network')
-        print(network.state_dict()['input_conv.0.weight'])
-        print('end')
-    network.n_params = nu.gimme_params(network)
+        # print('old network')
+        # for name, param in oldnetwork.named_parameters():
+        #     if param.requires_grad:
+        #         print(name)
+        
+        # print('new network')
+        # for name, param in network.named_parameters():
+        #     if param.requires_grad:
+        #         print(name)
+        print('manual initialization!!')
+        network.n_params = nu.gimme_params(network)
+        
+        network.load_state_dict(oldcheckpoint['network_state_dict'], strict=False)
+        if opt.Network['sasa'] == 'freeze' or opt.Network['sasa'] == 'share':
+            for name, param in network.named_parameters():
+                for oldname, oldparam in oldnetwork.named_parameters():
+                    if name.startswith('downconv_blockssasa_share') and not (name.endswith('to_q.weight') or name.endswith('to_q.bias') or name.endswith('to_kv.weight') or name.endswith('to_kv.bias')):
+                        if oldname == name.replace('sasa_share',''):
+                            param = oldparam
+                            print(name +' = '+ oldname)
+        if opt.Network['sasa'] == 'unique':
+            for name, param in network.named_parameters():
+                for oldname, oldparam in oldnetwork.named_parameters():
+                    if name.startswith('input_conv'):
+                        if oldname == name[0:10]+name[11:]:
+                            param = oldparam
+                            print(name +'='+ oldname)
+                    elif name.startswith('downconv_blockssasa_unique') and not (name.endswith('to_q.weight') or name.endswith('to_q.bias') or name.endswith('to_kv.weight') or name.endswith('to_kv.bias')):
+                        third_dot_index = len(name)-len(name.split('.',3)[-1])-1
+                        name_tmp = name[0:third_dot_index-1] + name[third_dot_index:]
+                        if oldname == name_tmp.replace('sasa_unique',''):
+                            param = oldparam
+                            print(name +' = '+ oldname)
+        
+        print('No_grad!')
+        for name, param in network.named_parameters():
+            if name.endswith('to_q.bias') or name.endswith('to_kv.bias'):
+                param.requires_grad = False
+                print(name)
+        
+        if opt.Network['sasa'] == 'freeze':
+            for name, param in network.named_parameters():
+                if name.startswith('input') or name.startswith('downconv') and not (name.endswith('to_q.weight') or name.endswith('to_kv.weight')):
+                    param.requires_grad = False
+                    print(name)
+
+    print(network.n_params)
     opt.Network['Network_name'] = network.name
     _ = network.to(opt.device)
 
