@@ -17,7 +17,12 @@ import Network_Utilities as nu
 ### General UNet Scaffold
 def NetworkSelect(opt):
     if opt.Training['network_type']=='unet':
-        return Scaffold_UNet(opt)
+        if ('sasa' in opt.Network.keys()) and (opt.Network['sasa']=='freeze' or opt.Network['sasa']=='unique'):
+            return Scaffold_UNetsasa_unique(opt)
+        elif ('sasa' in opt.Network.keys()) and (opt.Network['sasa']=='share'):
+            return Scaffold_UNetsasa_share(opt)
+        else:
+            return Scaffold_UNet(opt)
 
 
 
@@ -70,8 +75,6 @@ class Scaffold_UNet(nn.Module):
             self.pars.Network['dilation'] = [1]*len(self.pars.Network['structure'])
         if 'dilation_up' not in self.pars.Network.keys():
             self.pars.Network['dilation_up'] = self.pars.Network['dilation']
-        if 'sasa' not in self.pars.Network.keys():
-            self.pars.Network['sasa'] = False
 
 
         ############################# [SU] IF NO SPECIFIC DECODING STRUCTURE IS GIVEN, COPY ENCODING ####################
@@ -101,12 +104,7 @@ class Scaffold_UNet(nn.Module):
 
 
         ####################################### [SU] INPUT CONV #########################################################
-        if self.pars.Network['sasa']:
-            print('sasa enabled!')
-            self.input_conv          = [self.pars.fset.conv(1+stack_info[0]*self.pars.Training['num_out_classes'], self.pars.Network["filter_start"],3,1,1)]
-        else:
-            self.input_conv          = [self.pars.fset.conv(self.pars.Network["channels"]+stack_info[0]*self.pars.Training['num_out_classes'], self.pars.Network["filter_start"],3,1,1)]
-
+        self.input_conv          = [self.pars.fset.conv(self.pars.Network["channels"]+stack_info[0]*self.pars.Training['num_out_classes'], self.pars.Network["filter_start"],3,1,1)]
         if self.pars.Network['use_batchnorm']:
             self.input_conv.append(self.pars.fset.norm(self.pars.Network['filter_start']))
         else:
@@ -136,12 +134,9 @@ class Scaffold_UNet(nn.Module):
 
 
         ####################################### [SU,AU] PROJECTION TO LATENT SPACE ##########################################
-        # self.downconv_blocks    = [UNetBaseBlock(self.pars["filter_start"],self.pars["filter_start"], self.pars, 0)]
         self.downconv_blocks    = [UNetBlockDown(f_in+f_out*stack_info[i]*(i>0),f_out, self.pars, self.pars.Network['structure'][i], self.pars.Network['dilation'][i]) for i,(f_in,f_out) in enumerate(down_filter_arrangements)]
         self.downconv_blocks    = nn.ModuleList(self.downconv_blocks)
 
-        self.downconv_blockssasa    = [UNetBlockDownsasa(f_in+f_out*stack_info[i]*(i>0),f_out, self.pars, self.pars.Network['structure'][i], self.pars.Network['dilation'][i]) for i,(f_in,f_out) in enumerate(down_filter_arrangements)]
-        self.downconv_blockssasa    = nn.ModuleList(self.downconv_blockssasa)
 
         ####################################### [SU] RECONSTRUCTION FROM LATENT SPACE #####################################
         self.upconv_blocks      = [UNetBlockUp(f_t_in, f_in, f_out, self.pars, self.pars.Network['structure_up'][-(i+1)], self.pars.Network['dilation_up'][-(i+1)]) for i,((_,f_t_in),(f_in,f_out)) in enumerate(zip(down_filter_arrangements[::-1][1:],up_filter_arrangements))]
@@ -155,137 +150,67 @@ class Scaffold_UNet(nn.Module):
 
 
     def forward(self,net_layers):
-        if self.pars.Network['sasa']:
+        n_up_blocks   = len(self.upconv_blocks)
 
-            n_up_blocks   = len(self.upconv_blocks)
-
-            ### [SU] INITIAL CONVOLUTION
-            net_layers0 = self.input_conv(net_layers[:,0:1,:,:])
-            net_layers1 = self.input_conv(net_layers[:,1:2,:,:])
-            net_layers2 = self.input_conv(net_layers[:,2:3,:,:])
-
-            ############################################ DOWN ##################################################################
-            ### ENCODING
-            horizontal_connections = []
-            for maxpool_iter in range(len(self.pars.Network["structure"])-1):
-                ### [SU] STANDARD CONV
-                net_layers0, net_layers1, net_layers2, pass_layer  = self.downconv_blockssasa[maxpool_iter](net_layers0, net_layers1, net_layers2)
-                net_layers = net_layers1
+        ### [SU] INITIAL CONVOLUTION
+        net_layers  = self.input_conv(net_layers)
 
 
-                ### [SU] HORIZONTAL PASSES
-                horizontal_connections.append(pass_layer)
-
-
-
-            ############################################ BOTTLENECK ############################################################
+        ############################################ DOWN ##################################################################
+        ### ENCODING
+        horizontal_connections = []
+        for maxpool_iter in range(len(self.pars.Network["structure"])-1):
             ### [SU] STANDARD CONV
-            _, net_layers = self.downconv_blocks[-1](net_layers)
+            net_layers, pass_layer      = self.downconv_blocks[maxpool_iter](net_layers)
 
+            ### [SU] HORIZONTAL PASSES
+            horizontal_connections.append(pass_layer)
+
+
+
+        ############################################ BOTTLENECK ############################################################
+        ### [SU] STANDARD CONV
+        _, net_layers = self.downconv_blocks[-1](net_layers)
+
+        ### [AU] PYPOOL
+        if self.pars.Network['use_pypool']:
+            pypool_inputs = [net_layers]
+
+
+
+        ############################################ UP ##################################################################
+        ### DECODING
+        auxiliaries = [] if self.pars.Network['use_auxiliary_inputs'] and self.training else None
+        for upconv_iter in range(n_up_blocks):
+            ### [AU] AUXILIARY INPUTS
+            if upconv_iter<n_up_blocks and self.pars.Network['use_auxiliary_inputs'] and self.training:
+                auxiliaries.append(self.auxiliary_preparators[upconv_iter](net_layers))
+
+            ### [SU] HORIZONTAL PASSES
+            hor_pass    = horizontal_connections[::-1][upconv_iter]
+
+            ### [SU] STANDARD UPCONV
+            net_layers  = self.upconv_blocks[upconv_iter](net_layers, hor_pass)
             ### [AU] PYPOOL
             if self.pars.Network['use_pypool']:
-                pypool_inputs = [net_layers]
+                if upconv_iter<n_up_blocks-1:
+                    pypool_inputs.append(net_layers)
+                if upconv_iter==n_up_blocks-1:
+                    pypool_inputs = [pypool_prep(pypool_input) for pypool_prep, pypool_input in zip(self.pypools, pypool_inputs)]
+                    pypool_inputs = torch.cat(pypool_inputs, dim=1)
+                    net_layers    = torch.cat([net_layers, pypool_inputs], dim=1)
+
+        if self.pars.Network['use_auxiliary_inputs'] and self.training:
+            auxiliaries = auxiliaries[::-1]
 
 
 
-            ############################################ UP ##################################################################
-            ### DECODING
-            auxiliaries = [] if self.pars.Network['use_auxiliary_inputs'] and self.training else None
-            for upconv_iter in range(n_up_blocks):
-                ### [AU] AUXILIARY INPUTS
-                if upconv_iter<n_up_blocks and self.pars.Network['use_auxiliary_inputs'] and self.training:
-                    auxiliaries.append(self.auxiliary_preparators[upconv_iter](net_layers))
-
-                ### [SU] HORIZONTAL PASSES
-                hor_pass    = horizontal_connections[::-1][upconv_iter]
-
-                ### [SU] STANDARD UPCONV
-                net_layers  = self.upconv_blocks[upconv_iter](net_layers, hor_pass)
-                ### [AU] PYPOOL
-                if self.pars.Network['use_pypool']:
-                    if upconv_iter<n_up_blocks-1:
-                        pypool_inputs.append(net_layers)
-                    if upconv_iter==n_up_blocks-1:
-                        pypool_inputs = [pypool_prep(pypool_input) for pypool_prep, pypool_input in zip(self.pypools, pypool_inputs)]
-                        pypool_inputs = torch.cat(pypool_inputs, dim=1)
-                        net_layers    = torch.cat([net_layers, pypool_inputs], dim=1)
-
-            if self.pars.Network['use_auxiliary_inputs'] and self.training:
-                auxiliaries = auxiliaries[::-1]
+        #################################################### OUT ############################################################
+        ### [SU] OUTPUT CONV
+        net_layers = self.output_conv(net_layers)
 
 
-
-            #################################################### OUT ############################################################
-            ### [SU] OUTPUT CONV
-            net_layers = self.output_conv(net_layers)
-
-
-            return net_layers, auxiliaries
-
-        
-        else:
-            n_up_blocks   = len(self.upconv_blocks)
-
-            ### [SU] INITIAL CONVOLUTION
-
-            net_layers  = self.input_conv(net_layers)
-
-
-            ############################################ DOWN ##################################################################
-            ### ENCODING
-            horizontal_connections = []
-            for maxpool_iter in range(len(self.pars.Network["structure"])-1):
-                ### [SU] STANDARD CONV
-                net_layers, pass_layer      = self.downconv_blocks[maxpool_iter](net_layers)
-
-                ### [SU] HORIZONTAL PASSES
-                horizontal_connections.append(pass_layer)
-
-
-
-            ############################################ BOTTLENECK ############################################################
-            ### [SU] STANDARD CONV
-            _, net_layers = self.downconv_blocks[-1](net_layers)
-
-            ### [AU] PYPOOL
-            if self.pars.Network['use_pypool']:
-                pypool_inputs = [net_layers]
-
-
-
-            ############################################ UP ##################################################################
-            ### DECODING
-            auxiliaries = [] if self.pars.Network['use_auxiliary_inputs'] and self.training else None
-            for upconv_iter in range(n_up_blocks):
-                ### [AU] AUXILIARY INPUTS
-                if upconv_iter<n_up_blocks and self.pars.Network['use_auxiliary_inputs'] and self.training:
-                    auxiliaries.append(self.auxiliary_preparators[upconv_iter](net_layers))
-
-                ### [SU] HORIZONTAL PASSES
-                hor_pass    = horizontal_connections[::-1][upconv_iter]
-
-                ### [SU] STANDARD UPCONV
-                net_layers  = self.upconv_blocks[upconv_iter](net_layers, hor_pass)
-                ### [AU] PYPOOL
-                if self.pars.Network['use_pypool']:
-                    if upconv_iter<n_up_blocks-1:
-                        pypool_inputs.append(net_layers)
-                    if upconv_iter==n_up_blocks-1:
-                        pypool_inputs = [pypool_prep(pypool_input) for pypool_prep, pypool_input in zip(self.pypools, pypool_inputs)]
-                        pypool_inputs = torch.cat(pypool_inputs, dim=1)
-                        net_layers    = torch.cat([net_layers, pypool_inputs], dim=1)
-
-            if self.pars.Network['use_auxiliary_inputs'] and self.training:
-                auxiliaries = auxiliaries[::-1]
-
-
-
-            #################################################### OUT ############################################################
-            ### [SU] OUTPUT CONV
-            net_layers = self.output_conv(net_layers)
-
-
-            return net_layers, auxiliaries
+        return net_layers, auxiliaries
 
 
 
@@ -303,11 +228,395 @@ class Scaffold_UNet(nn.Module):
                 else:
                     raise NotImplementedError("Initialization {} not implemented.".format(init_type))
 
-                #torch.nn.init.constant(net_segment.bias.data, 0)
+                torch.nn.init.constant(net_segment.bias.data, 0)
+
+class Scaffold_UNetsasa_share(nn.Module):
+    def __init__(self, opt, stack_info=[]):
+        super(Scaffold_UNetsasa_share, self).__init__()
+
+        ####################################### EXPLANATION ##########################################
+        # [SU]:  Standard UNet Elements as described by Ronneberger et al.
+        # [AU]:  Advanced UNet Elements - Variations to tweak and possibly improve the network performance.
+        #        This includes the following options:
+        #           - Input Distribution
+        #           - Pyramid-style Pooling
+        #           - Auxiliary Inputs
+        #           - Multitask Injection
+        #           - Residual or Dense connections
+        # [kU]:  Elements required to use this class as subclass for a kUNet-stack.
+        # [sqU]: Squeeze-and-Excite Element to recalibrate feature maps, as shown by Hu et al.
+
+
+        ####################################### PRIOR SETUP ##########################################
+        self.pars          = opt
+        self.pars.fset     = LayerSet(opt)
+
+
+        ####################################### BACKWARD COMPATIBILITY ###############################
+        if 'block_type' not in self.pars.Network.keys():
+            self.pars.Network['block_type'] = 'base'
+        if 'dilation' not in self.pars.Network.keys():
+            self.pars.Network['dilation'] = [1]*len(self.pars.Network['structure'])
+        if 'dilation_up' not in self.pars.Network.keys():
+            self.pars.Network['dilation_up'] = self.pars.Network['dilation']
+
+
+        ############################# [SU] IF NO SPECIFIC DECODING STRUCTURE IS GIVEN, COPY ENCODING ####################
+        if not 'structure_up' in opt.Network.keys():
+            self.pars.Network['structure_up']    = self.pars.Network['structure']
+        if not 'filter_start_up' in opt.Network.keys():
+            self.pars.Network['filter_start_up'] = self.pars.Network['filter_start']
+
+
+        ############################# [SU] INITIAL NUMBER OF FILTERS WITHOUT INPUT DISTR. ###############################
+        self.pars.Network["filter_sizes"]    = [int(x) for x in self.pars.Network['filter_start']*2**np.array(list(range(0,len(self.pars.Network["structure"])+1)))]
+        self.pars.Network["filter_sizes_up"] = [int(x) for x in self.pars.Network['filter_start_up']*2**np.array(list(range(0,len(self.pars.Network["structure"])+1)))]
+
+
+        ####################################### UNIQUE NETWORK NAME ################################################
+        self.name = "vUnet2D"
+
+
+        ############### [SU] Create list of filter pairs corresponding to in- and outputfilters per block ###############
+        down_filter_arrangements = list(zip(self.pars.Network["filter_sizes"][:-1],self.pars.Network["filter_sizes"][1:]))
+        up_filter_arrangements   = list(zip(self.pars.Network["filter_sizes_up"][::-1][:-2],self.pars.Network["filter_sizes_up"][::-1][1:-1]))
+        up_filter_arrangements[0] = (down_filter_arrangements[-1][-1],up_filter_arrangements[1][0])
+
+        ############# [kU] ADJUST INPUT FILTERS IF USING STACK OF NETWORKS ##############################################
+        if not len(stack_info): stack_info = [0]*len(down_filter_arrangements)
+        if len(stack_info)<len(down_filter_arrangements): stack_info = stack_info+[0]*(len(down_filter_arrangements)-len(stack_info))
+
+
+        ####################################### [SU] INPUT CONV #########################################################
+        self.input_conv          = [self.pars.fset.conv(1+stack_info[0]*self.pars.Training['num_out_classes'], self.pars.Network["filter_start"],3,1,1)]
+        if self.pars.Network['use_batchnorm']:
+            self.input_conv.append(self.pars.fset.norm(self.pars.Network['filter_start']))
+        else:
+            ### For the first layer, group norm reduces to instance norm
+            self.input_conv.append(self.pars.fset.norm(self.pars.Network['filter_start'], self.pars.Network['filter_start']))
+        self.input_conv.append(nn.LeakyReLU(0.05))
+        self.input_conv          = nn.Sequential(*self.input_conv0)
+
+
+        ####################################### [AU] PYPOOL #############################################################
+        kernel_padding_pars = [(1,1,0)]+[(2**(i+2), 2**(i+1), 2**i) for i in range(len(self.pars.Network['structure'])-1)]
+        if self.pars.Network['use_pypool']:
+            self.pypools             = nn.ModuleList([self.pars.fset.tconv(f[0], 1, setup[0], setup[1], setup[2]) for setup,f in zip(kernel_padding_pars[1:][::-1], up_filter_arrangements)])
+
+
+        ####################################### [SU,AU] OUTPUT CONV ########################################################
+        add = len(self.pypools) if self.pars.Network['use_pypool'] else 0
+        outact                  = nn.Sigmoid() if self.pars.Training['num_out_classes']==1 else nn.Softmax(dim=1)
+        self.output_conv        = nn.Sequential(self.pars.fset.conv(self.pars.Network["filter_start_up"]*2+add,self.pars.Training["num_out_classes"],1,1,0), outact)
+
+
+
+        ####################################### [AU] AUXILIARY preparators ###############################################
+        up_filter_4_aux     = self.pars.Network["filter_sizes_up"]
+        up_filter_4_aux[-1] =  self.pars.Network["filter_sizes"][-1]
+        self.auxiliary_preparators = nn.ModuleList([Auxiliary_Preparator(filter_in, self.pars, self.pars.Training['num_out_classes']) for n,filter_in in enumerate(up_filter_4_aux[::-1][:-2]) if n<len(self.pars.Network['structure'])-1]) if self.pars.Network['use_auxiliary_inputs'] else None
+
+
+        ####################################### [SU,AU] PROJECTION TO LATENT SPACE ##########################################
+        self.downconv_blocks    = [UNetBlockDown(f_in+f_out*stack_info[i]*(i>0),f_out, self.pars, self.pars.Network['structure'][i], self.pars.Network['dilation'][i]) for i,(f_in,f_out) in enumerate(down_filter_arrangements)]
+        self.downconv_blocks    = nn.ModuleList(self.downconv_blocks)
+        self.downconv_blockssasa    = [UNetBlockDownsasa(f_in+f_out*stack_info[i]*(i>0),f_out, self.pars, self.pars.Network['structure'][i], self.pars.Network['dilation'][i]) for i,(f_in,f_out) in enumerate(down_filter_arrangements)]
+        self.downconv_blockssasa    = nn.ModuleList(self.downconv_blockssasa)
+
+
+        ####################################### [SU] RECONSTRUCTION FROM LATENT SPACE #####################################
+        self.upconv_blocks      = [UNetBlockUp(f_t_in, f_in, f_out, self.pars, self.pars.Network['structure_up'][-(i+1)], self.pars.Network['dilation_up'][-(i+1)]) for i,((_,f_t_in),(f_in,f_out)) in enumerate(zip(down_filter_arrangements[::-1][1:],up_filter_arrangements))]
+        self.upconv_blocks      = nn.ModuleList(self.upconv_blocks)
+
+
+        ####################################### [SU] INITIALIZE PARAMETERS #################################################
+        self.weight_init()
 
 
 
 
+    def forward(self,net_layers):
+        n_up_blocks   = len(self.upconv_blocks)
+
+        ### [SU] INITIAL CONVOLUTION
+        net_layers0 = self.input_conv(net_layers[:,0:1,:,:])
+        net_layers1 = self.input_conv(net_layers[:,1:2,:,:])
+        net_layers2 = self.input_conv(net_layers[:,2:3,:,:])
+
+        ############################################ DOWN ##################################################################
+        ### ENCODING
+        horizontal_connections = []
+        for maxpool_iter in range(len(self.pars.Network["structure"])-1):
+            ### [SU] STANDARD CONV
+            net_layers0, net_layers1, net_layers2, pass_layer  = self.downconv_blockssasa[maxpool_iter](net_layers0, net_layers1, net_layers2)
+            net_layers = net_layers1
+
+
+            ### [SU] HORIZONTAL PASSES
+            horizontal_connections.append(pass_layer)
+
+
+
+        ############################################ BOTTLENECK ############################################################
+        ### [SU] STANDARD CONV
+        _, net_layers = self.downconv_blocks[-1](net_layers)
+
+        ### [AU] PYPOOL
+        if self.pars.Network['use_pypool']:
+            pypool_inputs = [net_layers]
+
+
+
+        ############################################ UP ##################################################################
+        ### DECODING
+        auxiliaries = [] if self.pars.Network['use_auxiliary_inputs'] and self.training else None
+        for upconv_iter in range(n_up_blocks):
+            ### [AU] AUXILIARY INPUTS
+            if upconv_iter<n_up_blocks and self.pars.Network['use_auxiliary_inputs'] and self.training:
+                auxiliaries.append(self.auxiliary_preparators[upconv_iter](net_layers))
+
+            ### [SU] HORIZONTAL PASSES
+            hor_pass    = horizontal_connections[::-1][upconv_iter]
+
+            ### [SU] STANDARD UPCONV
+            net_layers  = self.upconv_blocks[upconv_iter](net_layers, hor_pass)
+            ### [AU] PYPOOL
+            if self.pars.Network['use_pypool']:
+                if upconv_iter<n_up_blocks-1:
+                    pypool_inputs.append(net_layers)
+                if upconv_iter==n_up_blocks-1:
+                    pypool_inputs = [pypool_prep(pypool_input) for pypool_prep, pypool_input in zip(self.pypools, pypool_inputs)]
+                    pypool_inputs = torch.cat(pypool_inputs, dim=1)
+                    net_layers    = torch.cat([net_layers, pypool_inputs], dim=1)
+
+        if self.pars.Network['use_auxiliary_inputs'] and self.training:
+            auxiliaries = auxiliaries[::-1]
+
+
+
+        #################################################### OUT ############################################################
+        ### [SU] OUTPUT CONV
+        net_layers = self.output_conv(net_layers)
+
+
+        return net_layers, auxiliaries
+
+
+
+    def weight_init(self):
+        for net_segment in self.modules():
+            if isinstance(net_segment, self.pars.fset.conv):
+                if self.pars.Network['init_type']=="xavier_u":
+                    torch.nn.init.xavier_uniform(net_segment.weight.data)
+                elif self.pars.Network['init_type']=="he_u":
+                    torch.nn.init.kaiming_uniform(net_segment.weight.data)
+                elif self.pars.Network['init_type']=="xavier_n":
+                    torch.nn.init.xavier_normal(net_segment.weight.data)
+                elif self.pars.Network['init_type']=="he_n":
+                    torch.nn.init.kaiming_normal(net_segment.weight.data)
+                else:
+                    raise NotImplementedError("Initialization {} not implemented.".format(init_type))
+
+                torch.nn.init.constant(net_segment.bias.data, 0)
+
+class Scaffold_UNetsasa_unique(nn.Module):
+    def __init__(self, opt, stack_info=[]):
+        super(Scaffold_UNetsasa_unique, self).__init__()
+
+        ####################################### EXPLANATION ##########################################
+        # [SU]:  Standard UNet Elements as described by Ronneberger et al.
+        # [AU]:  Advanced UNet Elements - Variations to tweak and possibly improve the network performance.
+        #        This includes the following options:
+        #           - Input Distribution
+        #           - Pyramid-style Pooling
+        #           - Auxiliary Inputs
+        #           - Multitask Injection
+        #           - Residual or Dense connections
+        # [kU]:  Elements required to use this class as subclass for a kUNet-stack.
+        # [sqU]: Squeeze-and-Excite Element to recalibrate feature maps, as shown by Hu et al.
+
+
+        ####################################### PRIOR SETUP ##########################################
+        self.pars          = opt
+        self.pars.fset     = LayerSet(opt)
+
+
+        ####################################### BACKWARD COMPATIBILITY ###############################
+        if 'block_type' not in self.pars.Network.keys():
+            self.pars.Network['block_type'] = 'base'
+        if 'dilation' not in self.pars.Network.keys():
+            self.pars.Network['dilation'] = [1]*len(self.pars.Network['structure'])
+        if 'dilation_up' not in self.pars.Network.keys():
+            self.pars.Network['dilation_up'] = self.pars.Network['dilation']
+
+
+        ############################# [SU] IF NO SPECIFIC DECODING STRUCTURE IS GIVEN, COPY ENCODING ####################
+        if not 'structure_up' in opt.Network.keys():
+            self.pars.Network['structure_up']    = self.pars.Network['structure']
+        if not 'filter_start_up' in opt.Network.keys():
+            self.pars.Network['filter_start_up'] = self.pars.Network['filter_start']
+
+
+        ############################# [SU] INITIAL NUMBER OF FILTERS WITHOUT INPUT DISTR. ###############################
+        self.pars.Network["filter_sizes"]    = [int(x) for x in self.pars.Network['filter_start']*2**np.array(list(range(0,len(self.pars.Network["structure"])+1)))]
+        self.pars.Network["filter_sizes_up"] = [int(x) for x in self.pars.Network['filter_start_up']*2**np.array(list(range(0,len(self.pars.Network["structure"])+1)))]
+
+
+        ####################################### UNIQUE NETWORK NAME ################################################
+        self.name = "vUnet2D"
+
+
+        ############### [SU] Create list of filter pairs corresponding to in- and outputfilters per block ###############
+        down_filter_arrangements = list(zip(self.pars.Network["filter_sizes"][:-1],self.pars.Network["filter_sizes"][1:]))
+        up_filter_arrangements   = list(zip(self.pars.Network["filter_sizes_up"][::-1][:-2],self.pars.Network["filter_sizes_up"][::-1][1:-1]))
+        up_filter_arrangements[0] = (down_filter_arrangements[-1][-1],up_filter_arrangements[1][0])
+
+        ############# [kU] ADJUST INPUT FILTERS IF USING STACK OF NETWORKS ##############################################
+        if not len(stack_info): stack_info = [0]*len(down_filter_arrangements)
+        if len(stack_info)<len(down_filter_arrangements): stack_info = stack_info+[0]*(len(down_filter_arrangements)-len(stack_info))
+
+
+        ####################################### [SU] INPUT CONV #########################################################
+        self.input_conv0          = [self.pars.fset.conv(1+stack_info[0]*self.pars.Training['num_out_classes'], self.pars.Network["filter_start"],3,1,1)]
+        self.input_conv1          = [self.pars.fset.conv(1+stack_info[0]*self.pars.Training['num_out_classes'], self.pars.Network["filter_start"],3,1,1)]
+        self.input_conv2          = [self.pars.fset.conv(1+stack_info[0]*self.pars.Training['num_out_classes'], self.pars.Network["filter_start"],3,1,1)]
+        if self.pars.Network['use_batchnorm']:
+            self.input_conv0.append(self.pars.fset.norm(self.pars.Network['filter_start']))
+            self.input_conv1.append(self.pars.fset.norm(self.pars.Network['filter_start']))
+            self.input_conv2.append(self.pars.fset.norm(self.pars.Network['filter_start']))
+        else:
+            ### For the first layer, group norm reduces to instance norm
+            self.input_conv0.append(self.pars.fset.norm(self.pars.Network['filter_start'], self.pars.Network['filter_start']))
+            self.input_conv1.append(self.pars.fset.norm(self.pars.Network['filter_start'], self.pars.Network['filter_start']))
+            self.input_conv2.append(self.pars.fset.norm(self.pars.Network['filter_start'], self.pars.Network['filter_start']))
+        self.input_conv0.append(nn.LeakyReLU(0.05))
+        self.input_conv1.append(nn.LeakyReLU(0.05))
+        self.input_conv2.append(nn.LeakyReLU(0.05))
+        self.input_conv0          = nn.Sequential(*self.input_conv0)
+        self.input_conv1          = nn.Sequential(*self.input_conv1)
+        self.input_conv2          = nn.Sequential(*self.input_conv2)
+
+
+        ####################################### [AU] PYPOOL #############################################################
+        kernel_padding_pars = [(1,1,0)]+[(2**(i+2), 2**(i+1), 2**i) for i in range(len(self.pars.Network['structure'])-1)]
+        if self.pars.Network['use_pypool']:
+            self.pypools             = nn.ModuleList([self.pars.fset.tconv(f[0], 1, setup[0], setup[1], setup[2]) for setup,f in zip(kernel_padding_pars[1:][::-1], up_filter_arrangements)])
+
+
+        ####################################### [SU,AU] OUTPUT CONV ########################################################
+        add = len(self.pypools) if self.pars.Network['use_pypool'] else 0
+        outact                  = nn.Sigmoid() if self.pars.Training['num_out_classes']==1 else nn.Softmax(dim=1)
+        self.output_conv        = nn.Sequential(self.pars.fset.conv(self.pars.Network["filter_start_up"]*2+add,self.pars.Training["num_out_classes"],1,1,0), outact)
+
+
+
+        ####################################### [AU] AUXILIARY preparators ###############################################
+        up_filter_4_aux     = self.pars.Network["filter_sizes_up"]
+        up_filter_4_aux[-1] =  self.pars.Network["filter_sizes"][-1]
+        self.auxiliary_preparators = nn.ModuleList([Auxiliary_Preparator(filter_in, self.pars, self.pars.Training['num_out_classes']) for n,filter_in in enumerate(up_filter_4_aux[::-1][:-2]) if n<len(self.pars.Network['structure'])-1]) if self.pars.Network['use_auxiliary_inputs'] else None
+
+
+        ####################################### [SU,AU] PROJECTION TO LATENT SPACE ##########################################
+        self.downconv_blocks    = [UNetBlockDown(f_in+f_out*stack_info[i]*(i>0),f_out, self.pars, self.pars.Network['structure'][i], self.pars.Network['dilation'][i]) for i,(f_in,f_out) in enumerate(down_filter_arrangements)]
+        self.downconv_blocks    = nn.ModuleList(self.downconv_blocks)
+        self.downconv_blockssasa    = [UNetBlockDownsasa(f_in+f_out*stack_info[i]*(i>0),f_out, self.pars, self.pars.Network['structure'][i], self.pars.Network['dilation'][i]) for i,(f_in,f_out) in enumerate(down_filter_arrangements)]
+        self.downconv_blockssasa    = nn.ModuleList(self.downconv_blockssasa)
+
+
+        ####################################### [SU] RECONSTRUCTION FROM LATENT SPACE #####################################
+        self.upconv_blocks      = [UNetBlockUp(f_t_in, f_in, f_out, self.pars, self.pars.Network['structure_up'][-(i+1)], self.pars.Network['dilation_up'][-(i+1)]) for i,((_,f_t_in),(f_in,f_out)) in enumerate(zip(down_filter_arrangements[::-1][1:],up_filter_arrangements))]
+        self.upconv_blocks      = nn.ModuleList(self.upconv_blocks)
+
+
+        ####################################### [SU] INITIALIZE PARAMETERS #################################################
+        self.weight_init()
+
+
+
+
+    def forward(self,net_layers):
+        n_up_blocks   = len(self.upconv_blocks)
+
+        ### [SU] INITIAL CONVOLUTION
+        net_layers0 = self.input_conv0(net_layers[:,0:1,:,:])
+        net_layers1 = self.input_conv1(net_layers[:,1:2,:,:])
+        net_layers2 = self.input_conv2(net_layers[:,2:3,:,:])
+
+        ############################################ DOWN ##################################################################
+        ### ENCODING
+        horizontal_connections = []
+        for maxpool_iter in range(len(self.pars.Network["structure"])-1):
+            ### [SU] STANDARD CONV
+            net_layers0, net_layers1, net_layers2, pass_layer  = self.downconv_blockssasa[maxpool_iter](net_layers0, net_layers1, net_layers2)
+            net_layers = net_layers1
+
+
+            ### [SU] HORIZONTAL PASSES
+            horizontal_connections.append(pass_layer)
+
+
+
+        ############################################ BOTTLENECK ############################################################
+        ### [SU] STANDARD CONV
+        _, net_layers = self.downconv_blocks[-1](net_layers)
+
+        ### [AU] PYPOOL
+        if self.pars.Network['use_pypool']:
+            pypool_inputs = [net_layers]
+
+
+
+        ############################################ UP ##################################################################
+        ### DECODING
+        auxiliaries = [] if self.pars.Network['use_auxiliary_inputs'] and self.training else None
+        for upconv_iter in range(n_up_blocks):
+            ### [AU] AUXILIARY INPUTS
+            if upconv_iter<n_up_blocks and self.pars.Network['use_auxiliary_inputs'] and self.training:
+                auxiliaries.append(self.auxiliary_preparators[upconv_iter](net_layers))
+
+            ### [SU] HORIZONTAL PASSES
+            hor_pass    = horizontal_connections[::-1][upconv_iter]
+
+            ### [SU] STANDARD UPCONV
+            net_layers  = self.upconv_blocks[upconv_iter](net_layers, hor_pass)
+            ### [AU] PYPOOL
+            if self.pars.Network['use_pypool']:
+                if upconv_iter<n_up_blocks-1:
+                    pypool_inputs.append(net_layers)
+                if upconv_iter==n_up_blocks-1:
+                    pypool_inputs = [pypool_prep(pypool_input) for pypool_prep, pypool_input in zip(self.pypools, pypool_inputs)]
+                    pypool_inputs = torch.cat(pypool_inputs, dim=1)
+                    net_layers    = torch.cat([net_layers, pypool_inputs], dim=1)
+
+        if self.pars.Network['use_auxiliary_inputs'] and self.training:
+            auxiliaries = auxiliaries[::-1]
+
+
+
+        #################################################### OUT ############################################################
+        ### [SU] OUTPUT CONV
+        net_layers = self.output_conv(net_layers)
+
+
+        return net_layers, auxiliaries
+
+
+
+    def weight_init(self):
+        for net_segment in self.modules():
+            if isinstance(net_segment, self.pars.fset.conv):
+                if self.pars.Network['init_type']=="xavier_u":
+                    torch.nn.init.xavier_uniform(net_segment.weight.data)
+                elif self.pars.Network['init_type']=="he_u":
+                    torch.nn.init.kaiming_uniform(net_segment.weight.data)
+                elif self.pars.Network['init_type']=="xavier_n":
+                    torch.nn.init.xavier_normal(net_segment.weight.data)
+                elif self.pars.Network['init_type']=="he_n":
+                    torch.nn.init.kaiming_normal(net_segment.weight.data)
+                else:
+                    raise NotImplementedError("Initialization {} not implemented.".format(init_type))
+
+                torch.nn.init.constant(net_segment.bias.data, 0)
 
 """======================================================"""
 ### Basic ResnetBlock
@@ -576,8 +885,8 @@ class SASA(nn.Module):
         out_channels = heads * dim_head
         self.kernel_size = kernel_size
 
-        self.to_q = nn.Conv2d(in_channels, out_channels, 1, bias=False)
-        self.to_kv = nn.Conv2d(in_channels, out_channels, 1, bias=False)
+        self.to_q = nn.Conv2d(in_channels, out_channels, 1, bias=True)
+        self.to_kv = nn.Conv2d(in_channels, out_channels, 1, bias=True)
         self.softmax = nn.Softmax(dim=-1)
 
     def forward(self, kvmap1, qmap, kvmap2):
@@ -613,6 +922,9 @@ class SASA(nn.Module):
         attn_out2 = rearrange(attn_out2, 'b n (h w) d -> b (n d) h w', h=h)
         attn_out = (attn_out1 + attn_out2) / 2
         return attn_out
+
+
+
 
 """======================================================"""
 ### Horizontal UNet Block - Up

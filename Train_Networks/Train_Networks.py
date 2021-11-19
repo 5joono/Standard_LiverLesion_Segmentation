@@ -78,6 +78,20 @@ def main(opt):
         ### NETWORK SETUP WITHOUT INITIALIZATION
         network = netlib.NetworkSelect(opt)
 
+    if opt.Network['sasa']:
+        oldnetwork_opt = pkl.load(open('../SAVEDATA/Standard_Lesion_Networks/vUnet2D_lesion_small/hypa.pkl','rb'))
+        oldnetwork = netlib.NetworkSelect(oldnetwork_opt)
+        oldcheckpoint = torch.load('../SAVEDATA/Standard_Lesion_Networks/vUnet2D_lesion_small/checkpoint_best_val.pth.tar')
+        oldnetwork.load_state_dict(oldcheckpoint['network_state_dict'])
+        print('old network')
+        print(oldnetwork.state_dict().keys())
+        print('new network')
+        print(network.state_dict().keys())
+        print('old network')
+        print(oldnetwork.state_dict()['input_conv.0.weight'])
+        print('new network')
+        print(network.state_dict()['input_conv.0.weight'])
+        print('end')
     network.n_params = nu.gimme_params(network)
     opt.Network['Network_name'] = network.name
     _ = network.to(opt.device)
