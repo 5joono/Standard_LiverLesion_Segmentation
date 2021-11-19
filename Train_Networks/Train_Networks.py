@@ -117,18 +117,18 @@ def main(opt):
                             param = oldparam
                             print(name +' = '+ oldname)
         
-        print('No_grad!')
+
         for name, param in network.named_parameters():
             if name.endswith('to_q.bias') or name.endswith('to_kv.bias'):
                 param.requires_grad = False
-                print(name)
-        
+
         if opt.Network['sasa'] == 'freeze':
             for name, param in network.named_parameters():
                 if name.startswith('input') or name.startswith('downconv') and not (name.endswith('to_q.weight') or name.endswith('to_kv.weight')):
                     param.requires_grad = False
-                    print(name)
 
+    for name, param in network.named_parameters():
+        print(name, ':', param.requires_grad)
     print(network.n_params)
     opt.Network['Network_name'] = network.name
     _ = network.to(opt.device)
