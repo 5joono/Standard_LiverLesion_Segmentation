@@ -29,8 +29,5 @@ model = NeuralNetwork().to(device)
 print(model)
 print(gimme_params(model))
 
-a = 2
-if a == 3 or 1:
-    print('T')
-else:
-    print('F')
+a = [i for i in range(5)]
+print(a)

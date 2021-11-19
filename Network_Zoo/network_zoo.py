@@ -17,10 +17,10 @@ import Network_Utilities as nu
 ### General UNet Scaffold
 def NetworkSelect(opt):
     if opt.Training['network_type']=='unet':
-        if ('sasa' in opt.Network.keys()) and (opt.Network['sasa']=='freeze' or opt.Network['sasa']=='unique'):
-            return Scaffold_UNetsasa_unique(opt)
-        elif ('sasa' in opt.Network.keys()) and (opt.Network['sasa']=='share'):
+        if ('sasa' in opt.Network.keys()) and (opt.Network['sasa']=='freeze' or opt.Network['sasa']=='share'):
             return Scaffold_UNetsasa_share(opt)
+        elif ('sasa' in opt.Network.keys()) and (opt.Network['sasa']=='unique'):
+            return Scaffold_UNetsasa_unique(opt)
         else:
             return Scaffold_UNet(opt)
 
@@ -226,7 +226,7 @@ class Scaffold_UNet(nn.Module):
                 elif self.pars.Network['init_type']=="he_n":
                     torch.nn.init.kaiming_normal(net_segment.weight.data)
                 else:
-                    raise NotImplementedError("Initialization {} not implemented.".format(init_type))
+                    raise NotImplementedError("Initialization {} not implemented.".format(self.pars.Network['init_type']))
 
                 torch.nn.init.constant(net_segment.bias.data, 0)
 
@@ -320,8 +320,8 @@ class Scaffold_UNetsasa_share(nn.Module):
         ####################################### [SU,AU] PROJECTION TO LATENT SPACE ##########################################
         self.downconv_blocks    = [UNetBlockDown(f_in+f_out*stack_info[i]*(i>0),f_out, self.pars, self.pars.Network['structure'][i], self.pars.Network['dilation'][i]) for i,(f_in,f_out) in enumerate(down_filter_arrangements)]
         self.downconv_blocks    = nn.ModuleList(self.downconv_blocks)
-        self.downconv_blockssasa    = [UNetBlockDownsasa(f_in+f_out*stack_info[i]*(i>0),f_out, self.pars, self.pars.Network['structure'][i], self.pars.Network['dilation'][i]) for i,(f_in,f_out) in enumerate(down_filter_arrangements)]
-        self.downconv_blockssasa    = nn.ModuleList(self.downconv_blockssasa)
+        self.downconv_blockssasa_share    = [UNetBlockDownsasa_share(f_in+f_out*stack_info[i]*(i>0),f_out, self.pars, self.pars.Network['structure'][i], self.pars.Network['dilation'][i]) for i,(f_in,f_out) in enumerate(down_filter_arrangements)]
+        self.downconv_blockssasa_share    = nn.ModuleList(self.downconv_blockssasa_share)
 
 
         ####################################### [SU] RECONSTRUCTION FROM LATENT SPACE #####################################
@@ -348,7 +348,7 @@ class Scaffold_UNetsasa_share(nn.Module):
         horizontal_connections = []
         for maxpool_iter in range(len(self.pars.Network["structure"])-1):
             ### [SU] STANDARD CONV
-            net_layers0, net_layers1, net_layers2, pass_layer  = self.downconv_blockssasa[maxpool_iter](net_layers0, net_layers1, net_layers2)
+            net_layers0, net_layers1, net_layers2, pass_layer  = self.downconv_blockssasa_share[maxpool_iter](net_layers0, net_layers1, net_layers2)
             net_layers = net_layers1
 
 
@@ -415,7 +415,7 @@ class Scaffold_UNetsasa_share(nn.Module):
                 elif self.pars.Network['init_type']=="he_n":
                     torch.nn.init.kaiming_normal(net_segment.weight.data)
                 else:
-                    raise NotImplementedError("Initialization {} not implemented.".format(init_type))
+                    raise NotImplementedError("Initialization {} not implemented.".format(self.pars.Network['init_type']))
 
                 torch.nn.init.constant(net_segment.bias.data, 0)
 
@@ -519,8 +519,8 @@ class Scaffold_UNetsasa_unique(nn.Module):
         ####################################### [SU,AU] PROJECTION TO LATENT SPACE ##########################################
         self.downconv_blocks    = [UNetBlockDown(f_in+f_out*stack_info[i]*(i>0),f_out, self.pars, self.pars.Network['structure'][i], self.pars.Network['dilation'][i]) for i,(f_in,f_out) in enumerate(down_filter_arrangements)]
         self.downconv_blocks    = nn.ModuleList(self.downconv_blocks)
-        self.downconv_blockssasa    = [UNetBlockDownsasa(f_in+f_out*stack_info[i]*(i>0),f_out, self.pars, self.pars.Network['structure'][i], self.pars.Network['dilation'][i]) for i,(f_in,f_out) in enumerate(down_filter_arrangements)]
-        self.downconv_blockssasa    = nn.ModuleList(self.downconv_blockssasa)
+        self.downconv_blockssasa_unique    = [UNetBlockDownsasa_unique(f_in+f_out*stack_info[i]*(i>0),f_out, self.pars, self.pars.Network['structure'][i], self.pars.Network['dilation'][i]) for i,(f_in,f_out) in enumerate(down_filter_arrangements)]
+        self.downconv_blockssasa_unique    = nn.ModuleList(self.downconv_blockssasa_unique)
 
 
         ####################################### [SU] RECONSTRUCTION FROM LATENT SPACE #####################################
@@ -547,7 +547,7 @@ class Scaffold_UNetsasa_unique(nn.Module):
         horizontal_connections = []
         for maxpool_iter in range(len(self.pars.Network["structure"])-1):
             ### [SU] STANDARD CONV
-            net_layers0, net_layers1, net_layers2, pass_layer  = self.downconv_blockssasa[maxpool_iter](net_layers0, net_layers1, net_layers2)
+            net_layers0, net_layers1, net_layers2, pass_layer  = self.downconv_blockssasa_unique[maxpool_iter](net_layers0, net_layers1, net_layers2)
             net_layers = net_layers1
 
 
@@ -614,7 +614,7 @@ class Scaffold_UNetsasa_unique(nn.Module):
                 elif self.pars.Network['init_type']=="he_n":
                     torch.nn.init.kaiming_normal(net_segment.weight.data)
                 else:
-                    raise NotImplementedError("Initialization {} not implemented.".format(init_type))
+                    raise NotImplementedError("Initialization {} not implemented.".format(self.pars.Network['init_type']))
 
                 torch.nn.init.constant(net_segment.bias.data, 0)
 
@@ -748,9 +748,9 @@ class UNetBlockDown(nn.Module):
 
         return net_layers, pass_layer
 
-class UNetBlockDownsasa(nn.Module):
+class UNetBlockDownsasa_share(nn.Module):
     def __init__(self, filters_in, filters_out, pars, reps, dilate_val):
-        super(UNetBlockDownsasa, self).__init__()
+        super(UNetBlockDownsasa_share, self).__init__()
         self.pars  = pars
 
         ### ADD OPTIONS FOR RESIDUAL/DENSE SKIP CONNECTIONS
@@ -871,6 +871,159 @@ class UNetBlockDownsasa(nn.Module):
         net_layers0 = self.pool(net_layers0)
         net_layers1 = self.pool(net_layers1)
         net_layers2 = self.pool(net_layers2)
+
+        return net_layers0, net_layers1, net_layers2, pass_layer
+
+class UNetBlockDownsasa_unique(nn.Module):
+    def __init__(self, filters_in, filters_out, pars, reps, dilate_val):
+        super(UNetBlockDownsasa_unique, self).__init__()
+        self.pars  = pars
+
+        ### ADD OPTIONS FOR RESIDUAL/DENSE SKIP CONNECTIONS
+        self.dense      = self.pars.Network['backbone']=='dense_residual'
+        self.residual   = 'residual' in self.pars.Network['backbone']
+
+        ### SET STANDARD CONVOLUTIONAL LAYERS
+        self.convs0, self.norms0, self.dropouts0, self.acts0 = [],[],[],[]
+        self.convs1, self.norms1, self.dropouts1, self.acts1 = [],[],[],[]
+        self.convs2, self.norms2, self.dropouts2, self.acts2 = [],[],[],[]
+
+        for i in range(reps):
+            f_in = filters_in if i==0 else filters_out
+
+            if self.pars.Network['block_type']=='res':
+                self.convs0.append(ResBlock(f_in, filters_out, self.pars, dilate_val))
+                self.convs1.append(ResBlock(f_in, filters_out, self.pars, dilate_val))
+                self.convs2.append(ResBlock(f_in, filters_out, self.pars, dilate_val))
+            elif self.pars.Network['block_type']=='resX':
+                self.convs0.append(ResXBlock(f_in, filters_out, self.pars, dilate_val))
+                self.convs1.append(ResXBlock(f_in, filters_out, self.pars, dilate_val))
+                self.convs2.append(ResXBlock(f_in, filters_out, self.pars, dilate_val))
+            else:
+                self.convs0.append(self.pars.fset.conv(f_in, filters_out, 3, 1, dilate_val, dilation = dilate_val))
+                self.convs1.append(self.pars.fset.conv(f_in, filters_out, 3, 1, dilate_val, dilation = dilate_val))
+                self.convs2.append(self.pars.fset.conv(f_in, filters_out, 3, 1, dilate_val, dilation = dilate_val))
+                
+
+
+            if self.pars.Network['use_batchnorm']:
+                #Set BatchNorm Filters
+                self.norms0.append(self.pars.fset.norm(f_in))
+                self.norms1.append(self.pars.fset.norm(f_in))
+                self.norms2.append(self.pars.fset.norm(f_in))
+            else:
+                #Set GroupNorm Filters
+                self.norms0.append(self.pars.fset.norm(f_in if f_in<self.pars.Network['filter_start']*2 else self.pars.Network['filter_start']*2, f_in))
+                self.norms1.append(self.pars.fset.norm(f_in if f_in<self.pars.Network['filter_start']*2 else self.pars.Network['filter_start']*2, f_in))
+                self.norms2.append(self.pars.fset.norm(f_in if f_in<self.pars.Network['filter_start']*2 else self.pars.Network['filter_start']*2, f_in))
+
+            self.acts0.append(nn.LeakyReLU(0.05))
+            self.acts1.append(nn.LeakyReLU(0.05))
+            self.acts2.append(nn.LeakyReLU(0.05))
+            if self.pars.Network['dropout']:
+                self.dropouts0.append(self.pars.fset.dropout(self.pars.Network['dropout']))
+                self.dropouts1.append(self.pars.fset.dropout(self.pars.Network['dropout']))
+                self.dropouts2.append(self.pars.fset.dropout(self.pars.Network['dropout']))
+
+
+        if self.pars.Network['se_reduction']: self.SE = SE_recalibration(filters_out, pars)
+
+        self.convs0, self.norms0, self.dropouts0, self.acts0 = nn.ModuleList(self.convs0), nn.ModuleList(self.norms0), nn.ModuleList(self.dropouts0), nn.ModuleList(self.acts0)
+        self.convs1, self.norms1, self.dropouts1, self.acts1 = nn.ModuleList(self.convs1), nn.ModuleList(self.norms1), nn.ModuleList(self.dropouts1), nn.ModuleList(self.acts1)
+        self.convs2, self.norms2, self.dropouts2, self.acts2 = nn.ModuleList(self.convs2), nn.ModuleList(self.norms2), nn.ModuleList(self.dropouts2), nn.ModuleList(self.acts2)
+        
+
+
+        ### ADD LAYERS THAT ADJUST THE CHANNELS OF THE INPUT LAYER TO THE BLOCK
+        if filters_in!=filters_out and self.residual:
+            self.adjust_channels0 = self.pars.fset.conv(filters_in, filters_out, 1, 1)
+            self.adjust_channels1 = self.pars.fset.conv(filters_in, filters_out, 1, 1)
+            self.adjust_channels2 = self.pars.fset.conv(filters_in, filters_out, 1, 1)
+        else:
+            self.adjust_channels0 = None
+            self.adjust_channels1 = None
+            self.adjust_channels2 = None
+
+        ### ADD LAYERS FOR OPTIONAL CONVOLUTIONAL POOLING
+        self.pool0 = self.pars.fset.conv(filters_out, filters_out, 3, 2, 1) if self.pars.Network["use_conv_pool"] else self.pars.fset.pool(kernel_size=3, stride=2, padding=1)
+        self.pool1 = self.pars.fset.conv(filters_out, filters_out, 3, 2, 1) if self.pars.Network["use_conv_pool"] else self.pars.fset.pool(kernel_size=3, stride=2, padding=1)
+        self.pool2 = self.pars.fset.conv(filters_out, filters_out, 3, 2, 1) if self.pars.Network["use_conv_pool"] else self.pars.fset.pool(kernel_size=3, stride=2, padding=1)
+        self.sasa = SASA(in_channels=filters_out, kernel_size=3, heads=4, dim_head=filters_out//4)
+
+
+
+    def forward(self, net_layers0, net_layers1, net_layers2):
+        if self.dense:
+            dense_list0 = []
+            dense_list1 = []
+            dense_list2 = []
+
+        for i in range(len(self.convs)):
+            ### NORMALIZE INPUT
+            net_layers0 = self.norms0[i](net_layers0)
+            net_layers1 = self.norms1[i](net_layers1)
+            net_layers2 = self.norms2[i](net_layers2)
+
+            ### ADJUST CHANNELS IF REQUIRED FOR RESIDUAL CONNECTIONS
+            if self.residual:
+                residual0 = self.adjust_channels0(net_layers0) if i==0 and self.adjust_channels0 is not None else net_layers0
+                residual1 = self.adjust_channels1(net_layers1) if i==0 and self.adjust_channels1 is not None else net_layers1
+                residual2 = self.adjust_channels2(net_layers2) if i==0 and self.adjust_channels2 is not None else net_layers2
+                if self.dense:
+                    dense_list0.append(residual0)
+                    dense_list1.append(residual1)
+                    dense_list2.append(residual2)
+
+            ### RUN SUBLAYER
+            net_layers0  = self.convs0[i](net_layers0)
+            net_layers1  = self.convs1[i](net_layers1)
+            net_layers2  = self.convs2[i](net_layers2)
+
+            ### ADD SKIP CONNECTIONS TO OUTPUT
+            if self.adjust_channels0 is not None:
+                #dense connections
+                if self.dense:
+                    for residual0 in dense_list0:
+                        net_layers0 += residual0
+                    for residual1 in dense_list1:
+                        net_layers1 += residual1
+                    for residual2 in dense_list2:
+                        net_layers2 += residual2
+                    
+                #residual skip connections
+                else:
+                    net_layers0 += residual0
+                    net_layers1 += residual1
+                    net_layers2 += residual2
+
+            ### RUN THROUGH ACTIVATION
+            net_layers0 = self.acts0[i](net_layers0)
+            net_layers1 = self.acts1[i](net_layers1)
+            net_layers2 = self.acts2[i](net_layers2)
+
+            ### RUN THROUGH DROPOUT
+            if self.pars.Network['dropout']: net_layers0 = self.dropouts0[i](net_layers0)
+            if self.pars.Network['dropout']: net_layers1 = self.dropouts1[i](net_layers1)
+            if self.pars.Network['dropout']: net_layers2 = self.dropouts2[i](net_layers2)
+
+        ### RUN THROUGH SQUEEZE AND EXCITATION MODULE
+        if self.pars.Network['se_reduction']: net_layers0 = self.SE(net_layers0)
+        if self.pars.Network['se_reduction']: net_layers1 = self.SE(net_layers1)
+        if self.pars.Network['se_reduction']: net_layers2 = self.SE(net_layers2)
+
+
+        ### RUN SASA! (5joono)
+
+        net_layers1 = self.sasa(net_layers0, net_layers1, net_layers2)
+
+
+        ### LAYER TO BE USED FOR HORIZONTAL SKIP CONNECTIONS ACROSS U.
+        pass_layer = net_layers1
+
+        ### CONVOLUTIONAL POOLING IF REQUIRED.
+        net_layers0 = self.pool0(net_layers0)
+        net_layers1 = self.pool1(net_layers1)
+        net_layers2 = self.pool2(net_layers2)
 
         return net_layers0, net_layers1, net_layers2, pass_layer
 

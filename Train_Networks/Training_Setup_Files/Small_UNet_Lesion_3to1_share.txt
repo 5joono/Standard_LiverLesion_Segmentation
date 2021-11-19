@@ -30,7 +30,7 @@ loss_func:         ['multiclass_combined']
 class_weights:     [[1,1]]
 wmap_weight:       [3]
 no_standardize:    [True]
-savename:          ['lesion_small_3to1']
+savename:          ['lesion_small_3to1_share']
 
 ###################################### Network
 filter_start:         [20]
@@ -46,7 +46,7 @@ up_conv_type:         [[4,2,1]]
 se_reduction:         [0]
 dilation:             [[1,1,1,1,1]]
 dilation_up:          [[1,1,1,1,1]]
-sasa:                 [True]
+sasa:                 ['share']
 
 
 ###################################### Paths
